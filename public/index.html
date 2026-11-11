@@ -28,6 +28,21 @@
         <input id="accessCode" type="password" autocomplete="off" placeholder="접속 코드를 입력하세요">
       </div>
 
+      <div class="level-control" aria-labelledby="levelControlTitle">
+        <div class="level-control-head">
+          <div>
+            <span id="levelControlTitle" class="level-control-title">설명 수준</span>
+            <p class="level-control-note">원하는 초등학생 눈높이를 선택하세요.</p>
+          </div>
+          <span id="levelValue" class="level-value">저학년</span>
+        </div>
+        <div class="level-slider-wrap">
+          <span class="level-label">저학년</span>
+          <input id="levelSlider" class="level-slider" type="range" min="1" max="2" step="1" value="1" aria-label="설명 수준 선택">
+          <span class="level-label">고학년</span>
+        </div>
+      </div>
+
       <div class="action-row">
         <span id="readyState" class="ready-state"></span>
         <button id="analyzeButton" class="primary" disabled>✨ PDF 분석 & 카드뉴스 생성하기</button>
