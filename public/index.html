@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF 논문·보고서 쉬운 해설 & 카드뉴스</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/static/pretendard.min.css">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <span class="eyebrow">Gemini PDF 분석 도구</span>
+      <h1>📄 PDF 논문 · 보고서 쉬운 해설 & 카드뉴스</h1>
+      <p>PDF 파일을 업로드하면 Gemini가 분석해 초등학생 해설과 카드뉴스를 만들어 드립니다!</p>
+    </header>
+
+    <section class="panel upload-panel">
+      <label id="dropZone" class="drop-zone" for="pdfFile">
+        <input id="pdfFile" type="file" accept="application/pdf,.pdf">
+        <strong>여기를 클릭하거나 PDF 파일을 드래그하여 업로드하세요</strong>
+        <span>지원 형식: .pdf (최대 4MB)</span>
+        <em id="fileName">선택된 파일이 없습니다.</em>
+      </label>
+
+      <div id="accessWrap" class="access-wrap hidden">
+        <label for="accessCode">접속 코드</label>
+        <input id="accessCode" type="password" autocomplete="off" placeholder="접속 코드를 입력하세요">
+      </div>
+
+      <div class="action-row">
+        <span id="readyState" class="ready-state"></span>
+        <button id="analyzeButton" class="primary" disabled>✨ PDF 분석 & 카드뉴스 생성하기</button>
+      </div>
+    </section>
+
+    <div id="loading" class="loading hidden"><span class="spinner"></span>PDF 파일을 읽고 Gemini가 분석 중입니다...</div>
+    <div id="errorBox" class="error-box hidden" role="alert"></div>
+
+    <section id="results" class="results hidden">
+      <div class="results-heading">
+        <div>
+          <h2>🎯 분석 결과</h2>
+          <p>문서의 핵심을 쉬운 말과 카드뉴스 구성으로 정리했습니다.</p>
+        </div>
+        <button id="copyAllButton" class="secondary">📋 전체 결과 복사하기</button>
+      </div>
+
+      <article class="result-card amber">
+        <span class="card-tag">CARD 1</span>
+        <h3>👧 초등학생도 이해하는 쉬운 말 해설</h3>
+        <div id="easyExplanation" class="preline"></div>
+        <button class="small-copy" data-copy="easyExplanation">내용 복사</button>
+      </article>
+
+      <article class="result-card emerald">
+        <span class="card-tag">CARD 2</span>
+        <h3>📌 핵심 테이크어웨이 (3줄 요약)</h3>
+        <ol id="takeaways" class="takeaways"></ol>
+      </article>
+
+      <article class="result-card indigo">
+        <span class="card-tag">CARD 3</span>
+        <h3>📱 SNS 카드뉴스용 텍스트 (슬라이드 1 ~ 4)</h3>
+        <div id="cardNews" class="card-news-grid"></div>
+      </article>
+    </section>
+  </main>
+  <div id="toast" class="toast" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
