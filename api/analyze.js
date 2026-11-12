@@ -1,5 +1,7 @@
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 const MAX_PDF_BYTES = 4 * 1024 * 1024;
+const GEMINI_TIMEOUT_MS = 90 * 1000;
+const MAX_ATTEMPTS = 2;
 
 const SYSTEM_PROMPT = `당신은 논문과 보고서를 초등학생도 이해할 수 있게 바꾸는 교육 콘텐츠 편집자입니다.
 반드시 아래 JSON 형식만 반환하세요. 마크다운 코드펜스나 설명 문장은 쓰지 마세요.
@@ -16,15 +18,21 @@ const SYSTEM_PROMPT = `당신은 논문과 보고서를 초등학생도 이해�
 쉬운 말 해설은 어려운 용어를 풀어 쓰고, PDF에 없는 내용은 추측하지 마세요. 사실과 의견을 구분하세요.`;
 
 function jsonResponse(res, status, body) {
-  res.status(status).setHeader("Content-Type", "application/json; charset=utf-8").json(body);
+  return res.status(status).setHeader("Content-Type", "application/json; charset=utf-8").json(body);
 }
 
 function extractJson(text) {
-  const cleaned = String(text || "").replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
-  try { return JSON.parse(cleaned); } catch (_) {}
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start >= 0 && end > start) return JSON.parse(cleaned.slice(start, end + 1));
+  const cleaned = String(text || "")
+    .replace(/^```json\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch (_) {
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start >= 0 && end > start) return JSON.parse(cleaned.slice(start, end + 1));
+  }
   throw new Error("Gemini 응답이 JSON 형식이 아닙니다.");
 }
 
@@ -32,21 +40,31 @@ function validateResult(result) {
   if (!result || typeof result.easyExplanation !== "string" || !Array.isArray(result.summary) || !Array.isArray(result.cards)) {
     throw new Error("Gemini 응답 형식이 올바르지 않습니다.");
   }
-  result.summary = result.summary.slice(0, 3).map(String);
-  result.cards = result.cards.slice(0, 4).map((card, index) => ({
+  const summary = result.summary.slice(0, 3).map(item => String(item));
+  while (summary.length < 3) summary.push("요약을 만들지 못했습니다.");
+  const cards = result.cards.slice(0, 4).map((card, index) => ({
     number: index + 1,
-    title: String(card.title || `카드 ${index + 1}`),
-    body: String(card.body || "")
+    title: String(card?.title || `카드 ${index + 1}`),
+    body: String(card?.body || "")
   }));
-  return result;
+  while (cards.length < 4) {
+    const number = cards.length + 1;
+    cards.push({ number, title: `카드 ${number}`, body: "내용을 만들지 못했습니다." });
+  }
+  return { easyExplanation: result.easyExplanation, summary, cards };
+}
+
+function isRetryableStatus(status) {
+  return [429, 500, 503].includes(status);
 }
 
 async function callGemini(payload, apiKey) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(MODEL)}:generateContent`;
   let lastError;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 270000);
+    const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
     try {
       const response = await fetch(url, {
         method: "POST",
@@ -55,19 +73,26 @@ async function callGemini(payload, apiKey) {
         signal: controller.signal
       });
       const data = await response.json().catch(() => ({}));
-      if (response.ok) {
-        const text = data?.candidates?.[0]?.content?.parts?.map(part => part.text || "").join("");
-        return validateResult(extractJson(text));
+
+      if (!response.ok) {
+        const error = new Error(data?.error?.message || `Gemini API 오류(${response.status})`);
+        error.retryable = isRetryableStatus(response.status);
+        throw error;
       }
-      lastError = new Error(data?.error?.message || `Gemini API 오류(${response.status})`);
-      if (![429, 500, 503].includes(response.status)) throw lastError;
+
+      const text = data?.candidates?.[0]?.content?.parts?.map(part => part.text || "").join("");
+      if (!text) throw new Error("Gemini가 빈 응답을 반환했습니다.");
+      return validateResult(extractJson(text));
     } catch (error) {
-      lastError = error.name === "AbortError" ? new Error("Gemini 응답 시간이 초과되었습니다.") : error;
-      if (error.name !== "AbortError" && attempt === 2) throw lastError;
+      lastError = error.name === "AbortError"
+        ? new Error("Gemini 응답 시간이 90초를 초과했습니다.")
+        : error;
+      const retryable = error.name === "AbortError" || error.retryable === true;
+      if (!retryable || attempt === MAX_ATTEMPTS - 1) throw lastError;
+      await new Promise(resolve => setTimeout(resolve, 1500 * (2 ** attempt)));
     } finally {
       clearTimeout(timer);
     }
-    await new Promise(resolve => setTimeout(resolve, 1500 * (2 ** attempt)));
   }
   throw lastError || new Error("Gemini 호출에 실패했습니다.");
 }
@@ -79,23 +104,41 @@ module.exports = async function handler(req, res) {
 
   try {
     const { pdfBase64, level } = req.body || {};
-    if (!pdfBase64 || typeof pdfBase64 !== "string") return jsonResponse(res, 400, { error: "PDF 데이터가 없습니다." });
-    const pdfBytes = Buffer.from(pdfBase64, "base64");
-    if (pdfBytes.length > MAX_PDF_BYTES) return jsonResponse(res, 413, { error: "PDF는 4MB 이하만 업로드할 수 있습니다." });
+    if (!pdfBase64 || typeof pdfBase64 !== "string") {
+      return jsonResponse(res, 400, { error: "PDF 데이터가 없습니다." });
+    }
 
-    const levelText = level === "high" ? "초등학교 고학년(4~6학년) 수준" : "초등학교 저학년(1~3학년) 수준";
+    const pdfBytes = Buffer.from(pdfBase64, "base64");
+    if (!pdfBytes.length) return jsonResponse(res, 400, { error: "PDF 데이터를 읽을 수 없습니다." });
+    if (pdfBytes.length > MAX_PDF_BYTES) {
+      return jsonResponse(res, 413, { error: "PDF는 4MB 이하만 업로드할 수 있습니다." });
+    }
+
+    const isHighLevel = level === "high";
+    const levelText = isHighLevel ? "초등학교 고학년(4~6학년) 수준" : "초등학교 저학년(1~3학년) 수준";
+    const lengthRule = isHighLevel
+      ? "해설은 700자 이내, 각 요약은 한 문장, 카드 본문은 각각 250자 이내로 간결하게 작성하세요."
+      : "해설은 500자 이내, 각 요약은 한 문장, 카드 본문은 각각 180자 이내로 작성하세요.";
+
     const payload = {
       systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
       contents: [{ parts: [
         { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
-        { text: `이 PDF를 ${levelText}에 맞춰 분석하세요. 1) 쉬운 말 해설, 2) 정확히 3줄 요약, 3) SNS 카드뉴스 4장 구성안을 JSON으로 작성하세요.` }
+        { text: `이 PDF를 ${levelText}에 맞춰 분석하세요. ${lengthRule} 쉬운 말 해설, 정확히 3줄 요약, 4장 카드뉴스 구성안을 JSON으로 작성하세요.` }
       ] }],
-      generationConfig: { responseMimeType: "application/json", temperature: 0.4 }
+      generationConfig: {
+        responseMimeType: "application/json",
+        temperature: 0.4,
+        maxOutputTokens: isHighLevel ? 2048 : 1536
+      }
     };
+
     const result = await callGemini(payload, apiKey);
     return jsonResponse(res, 200, result);
   } catch (error) {
-    console.error(error);
-    return jsonResponse(res, 500, { error: error.message || "분석 중 오류가 발생했습니다." });
+    console.error("/api/analyze error:", error);
+    const message = error?.message || "분석 중 오류가 발생했습니다.";
+    const status = message.includes("90초") ? 504 : 500;
+    return jsonResponse(res, status, { error: message });
   }
 };
