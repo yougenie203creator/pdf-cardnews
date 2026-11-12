@@ -31,25 +31,28 @@ pdfInput.addEventListener("change", event => chooseFile(event.target.files[0]));
 dropZone.addEventListener("drop", event => chooseFile(event.dataTransfer.files[0]));
 
 function showStatus(message, error = false) { $("#status").textContent = message; $("#status").style.color = error ? "#b15f68" : "#806aa6"; }
-function readAsBase64(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = reject; reader.readAsDataURL(file); }); }
+function readAsBase64(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = () => reject(new Error("PDF 파일을 읽지 못했습니다.")); reader.readAsDataURL(file); }); }
 
 analyzeButton.addEventListener("click", async () => {
   if (!selectedFile) return;
   analyzeButton.disabled = true;
-  showStatus("PDF 파일을 읽고 Gemini가 분석 중입니다...");
+  showStatus("PDF 파일을 읽고 Gemini가 분석 중입니다... 최대 90초가 걸릴 수 있어요.");
   try {
     const pdfBase64 = await readAsBase64(selectedFile);
     const response = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pdfBase64, level: levelToggle.checked ? "high" : "low" }) });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "분석 중 오류가 발생했습니다.");
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `서버 오류(${response.status})가 발생했습니다.`);
     renderResults(data);
     showStatus("분석이 끝났어요.");
-  } catch (error) { showStatus(error.message, true); } finally { analyzeButton.disabled = false; }
+  } catch (error) {
+    const message = error.name === "TypeError" ? "서버에 연결하지 못했습니다. Vercel 배포가 완료되었는지 확인해 주세요." : (error.message || "분석 중 오류가 발생했습니다.");
+    showStatus(message, true);
+  } finally { analyzeButton.disabled = false; }
 });
 
 function renderResults(data) {
-  $("#easyExplanation").textContent = data.easyExplanation;
-  $("#summary").innerHTML = data.summary.map(item => `<li>${escapeHtml(item)}</li>`).join("");
+  $("#easyExplanation").textContent = data.easyExplanation || "";
+  $("#summary").innerHTML = (data.summary || []).map(item => `<li>${escapeHtml(item)}</li>`).join("");
   latestCards = data.cards || [];
   $("#cards").innerHTML = latestCards.map(card => `<div class="mini-card"><span class="card-label">CARD ${card.number}</span><h4>${escapeHtml(card.title)}</h4><p>${escapeHtml(card.body)}</p></div>`).join("");
   $("#results").hidden = false;
@@ -57,10 +60,7 @@ function renderResults(data) {
 }
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char])); }
 
-$("#downloadAll").addEventListener("click", () => {
-  if (!latestCards.length) return;
-  latestCards.forEach((card, index) => downloadCardPng(card, index));
-});
+$("#downloadAll").addEventListener("click", () => { if (latestCards.length) latestCards.forEach((card, index) => downloadCardPng(card, index)); });
 function downloadCardPng(card, index) {
   const canvas = document.createElement("canvas"); canvas.width = 1080; canvas.height = 1080;
   const ctx = canvas.getContext("2d");
